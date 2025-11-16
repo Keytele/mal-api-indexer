@@ -1,77 +1,105 @@
-#!/usr/bin/env python3
+# Import libraries
 
-import os
-import sys
-import argparse
 import json
-import secrets
+import os
+import argparse
+import requests
 from dotenv import load_dotenv
-import requests  # pip install requests
 
-load_dotenv()
+load_dotenv() # Load environment variables
 
-client_id = os.getenv('MAL_CLIENT_ID')
-client_secret = os.getenv('MAL_CLIENT_SECRET')
+CLIENT_ID = os.getenv("MAL_CLIENT_ID")
+if not CLIENT_ID:
+    raise RuntimeError("No Client ID found in environment variables, program will terminate!")
 
-def get_new_code_verifier() -> str: #This function is to generate a Code Verifier and Code Challenge with PKCE
-    token = secrets.token_urlsafe(100)
-    return token[:128]
+BASE_URL = "https://api.myanimelist.net/v2/anime/season/{year}/{season}?{limit}"
 
-code_verifier = code_challenge = get_new_code_verifier()
 
-print(len(code_verifier))
-print(code_verifier)
+# Calling the MAL API
 
-def print_new_authorisation_url(code_challenge: str):
-    global client_id
+def load_token():
+    global data
+
+    try:
+        with open('token.json', 'r') as file:
+            data = json.load(file)
+    except:
+        print("token.json missing. Run AuthServer.py.")
+        exit()
+
+    token = data.get("access_token")
+    expires_in = data.get("expires_in", 0)
+
+    # If expired, refresh the token
+    if expires_in <= 0:
+        token = refresh_access_token()
+
+    return token
+        
+def search_anime(year, season, limit): # Function to search anime by year, season, and limit along with handling request errors
+    url = BASE_URL.format(year = year, season = season.lower(), limit = limit)
     
-    url = f'https://myanimelist.net/v1/oauth2/authorize?response_type=code&client_id={client_id}&code_challenge={code_challenge}'
-
-    print(f'Authorise your application by access the link provided: {url}\n')
-    
-def generate_new_token(authorisation_code: str, code_verifier: str) -> dict:
-    global client_id, client_secret
-    
-    url = 'https://myanimelist.net/v1/oath2/token'
-    data = {
-        'client_id': client_id,
-        'client_secret': client_secret,
-        'code': authorisation_code,
-        'code_verifier': code_verifier,
-        'grant_type': 'authorization_code'
+    headers = {
+        "X-MAL-CLIENT-ID": CLIENT_ID,
+        "Authorization": f"Bearer {load_token()}"
     }
     
-    response = requests.post(url, data)
-    response.raise_for_status() # Check whether the request contains errors and will raise a status
+    response = requests.get(url, headers=headers)
     
-    token = response.json()
-    response.close()
-    
-    print('Token generated successfully!')
-    
-    with open('token.json', 'w') as file:
-        json.dump(token, file, indent = 4)
-        print('Token is saved in "token.json"')
+    if response.status_code != 200:
+        print("Request failed:", response.status_code, response.text)
+        exit()
         
-    return token
+    return response.json()
 
-def print_user_information(access_token: str):
-    url = 'https://api.myanimelist.net/v2/users/@me'
-    response = requests.get(url, headers = {
-        'Authorization': f'Bearer {access_token}'
-    })
+
+def refresh_access_token():
+    url = "https://myanimelist.net/v1/oauth2/token"
     
-    response.raise_for_status()
-    user = response.json()
-    response.close()
-    
-    print(f"\n>>> Greetings {user['name']}! <<<")
-    
-if __name__ == '__main__':
-    code_verifier = code_challenge = get_new_code_verifier()
-    print_new_authorisation_url(code_challenge)
-    
-    authorisation_code = input('Copy-paste the Authorisation Code: ').strip()
-    token = generate_new_token(authorisation_code, code_verifier)
-    
-    print_user_information(token['access_token'])
+    refresh_token = data.get("refresh_token")
+
+    payload = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": CLIENT_ID,
+    }
+
+    response = requests.post(url, data=payload)
+
+    if response.status_code != 200:
+        print("Failed to refresh token:", response.text)
+        exit()
+
+    new_data = response.json()
+
+    # Save updated token.json
+    with open("token.json", "w") as f:
+        json.dump(new_data, f, indent=4)
+
+    print("✔ Access token refreshed")
+    return new_data["access_token"]
+
+
+
+# Setting up argument parser using Argparse and initialising the CLI
+
+parser = argparse.ArgumentParser(description= "MAL Search Program")
+parser.add_argument('-y', '--year', type=int, required=True, help="Select the year of anime")
+parser.add_argument('-s', '--season', type=str, required=True, choices=['spring', 'summer', 'autumn', 'winter'], help="Select the season eg. Spring, Summer")
+parser.add_argument('-l', '--limit', type=int,  required=True, default=10,help="Select the limit of anime to be displayed")
+
+args = parser.parse_args()
+
+# Running the search
+
+result = search_anime(args.year, args.season, args.limit)
+
+# Display results
+print("\n=== Anime Search Results ===\n")
+
+for anime in result.get("data", []):
+    node = anime.get("node", {})
+    print(f"Title: {node.get('title')}")
+    print(f"ID: {node.get('id')}")
+    print(f"Link: https://myanimelist.net/anime/{node.get('id')}")
+    print("-" * 40)
